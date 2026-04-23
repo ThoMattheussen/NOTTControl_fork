@@ -107,7 +107,7 @@ class Utils:
                 if device_info["model"] == "PHX064S-M":
                     cam_device_infos.append(device_info)
             
-            # Both cameras have been detected on network:
+            # Two cameras have been detected on network:
             if len(cam_device_infos) == 2:
                 # Create devices
                 try:
@@ -120,6 +120,10 @@ class Utils:
                             pup_cam_device = system.create_device(cam_device_info)[0]
                             self.devices["pup_cam"] = pup_cam_device
                             print("Device used for pupil plane:",pup_cam_device)
+
+                    # Check that both cameras are correctly loaded
+                    if "im_cam" not in self.devices or "pup_cam" not in self.devices:
+                        raise Exception("Two cameras detected but could not match their IP addresses to the ones in the configuration file.")
                             
                     # Installing default readout and streaming configuration
                     for name in self.devices.keys():
@@ -153,7 +157,10 @@ class Utils:
     def _clean(self):
         """Destroy all opened devices."""
         for device in self.devices.values():
-            system.destroy_device(device)
+            try:
+                system.destroy_device(device)
+            except Exception as e:
+                print(f"Failed to destroy device: {e}")
         print("All devices closed.")
         self.devices = {}
     
