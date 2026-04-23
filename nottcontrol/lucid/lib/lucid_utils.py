@@ -12,6 +12,7 @@ Created on Wed Dec 17 13:36:18 2025
 # General
 import time
 import ast
+import threading
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
@@ -73,9 +74,9 @@ class Utils:
     '''
     Class that bundles functionalities related to the lucid visible cameras installed in the pupil and image plane.
     Functionalities include:
-        > Creating and managing camera connections via the lucid-provided "Arena API"
+        > Creating and managing camera connections and streams via the lucid-provided "Arena API"
         > Changing the configuration (frame size, exposure time, ...) of connected cameras
-        > Streaming frames from the cameras by exchange of buffers
+        > Fetching camera frames by exchange of buffers
         > Fitting camera frames for beam centroid positions
         > Providing visual feedback
         
@@ -84,7 +85,7 @@ class Utils:
     import lucid_utils
     with lucid_utils.Utils() as utils:
         
-        frame,width,height = utils.get_frame("im_cam")
+        frame,width,height = utils.snap("im_cam")
         
     '''
  
@@ -295,22 +296,82 @@ class Utils:
         device.requeue_buffer(buffer)
         
         return frame,w,h
+
+    def snap(self, name):
+        """Take a snapshot of camera {name}'s view, i.e. one single frame of data. This function handles the opening and closing of the stream."""
+        self.start_streaming(name)
+        try:
+            frame, w, h = self.get_frame(name)
+        finally:
+            self.stop_streaming(name)
+            print(f"Camera {name} returned a snapshot, stream closed.")
+        return frame, w, h
+
+    def get_thread(self, name, callback, stop_event):
+        """Stream snapshots of camera {name}'s view in real-time and pass each one to the callback function. A background thread is used for this purpose.
+        To stop the stream, call "stop_event.set() from outside the thread, i.e. in upper-level code."""
+
+        def _loop():
+            self.start_streaming(name)
+            try:
+                while not stop_event.is_set():
+                    frame, w, h = self.get_frame(name)
+                    # Pass frame to callback function, returning/doing whatever you wish.
+                    callback(frame, w, h)
+            finally:
+                self.stop_streaming(name)
+
+        thread = threading.Thread(target=_loop)
+        thread.start()
+        return thread
+
+    def stream_view(self, name):
+        """ Real-time stream of the camera {name}'s view."""
+
+        # Get a single frame to get its dimensions. These cannot change during stream by construction of this code package.
+        frame, w, h = self.snap(name)
+        # Initialize plot
+        fig, ax = plt.subplots()
+        plot = ax.imshow(frame)
+        plt.ion()
+        plt.show()
+
+        def callback(frame, w, h):
+            plot.set_data(frame)
+            fig.canvas_draw()
+            fig.canvas.flush_events()
+
+        print("Streaming, press CTRL+C to quit.")
+        # Creating event to mark when to stop, as well as the thread itself
+        stop_event = threading.Event()
+        thread = self.stream(name, callback, stop_event)
+
+        try:
+            while True:
+                time.sleep(0.01)
+        except KeyboardInterrupt:
+            stop_event.set()
+            thread.join()
+            print(f"Stopped the stream on camera {name}.")
     
-    def get_fit(self,name,beam_nr,visual_feedback):
-        """Fit for the centroid position and radius of a single beam that is visible on camera "name".
+    def fit(self,name,beam_nr,visual_feedback):
+        """Fit for the centroid position and radius of a single beam that is visible on camera "name". This function handles the opening and closing of the stream.
         beam_nr is either 1,2,3 or 4. Beams are numbered counting towards the bench edge; beam 1 is the innermost one, beam 4 the outermost one.
         If "visual_feedback" is True, the frame and identified centroid / beam size are plotted.
         """
         
         if not isinstance(name,str):
             name = str(name)
-        
-        if name == "im_cam":
-            return self.get_fit_im(beam_nr,visual_feedback,**fit_params[name])
-        elif name == "pup_cam":
-            return self.get_fit_pup(beam_nr,visual_feedback,**fit_params[name])
-        else:
-            raise Exception(f"Camera with name {name} not recognized. Please specify either 'im_cam' or 'pup_cam' as name.")
+        self.start_streaming(name)
+        try:
+            if name == "im_cam":
+                return self.get_fit_im(beam_nr,visual_feedback,**fit_params[name])
+            elif name == "pup_cam":
+                return self.get_fit_pup(beam_nr,visual_feedback,**fit_params[name])
+            else:
+                raise Exception(f"Camera with name {name} not recognized. Please specify either 'im_cam' or 'pup_cam' as name.")
+        finally:
+            self.stop_streaming(name)
        
     # Binning function
     def _bin_frame(self, data, binning_x, binning_y):
@@ -373,7 +434,7 @@ class Utils:
         radius = np.hypot(np.std(rows),np.std(cols))
         print("Radius guess: ", radius*mybinx)
         # Guess for total flux in binned beam
-        x, y = np.meshgrid(np.arange(w/mybinx), np.arange(h/mybiny), )
+        x, y = np.meshgrid(np.arange(w//mybinx), np.arange(h//mybiny), )
         mask_circle = np.hypot(x-centroid_x,y-centroid_y) < radius
         flux = np.sum(myframe_bin[mask_circle])
         print("Flux guess: ", flux*mybinx*mybiny)
@@ -514,7 +575,7 @@ class Utils:
         radius = np.hypot(np.std(rows),np.std(cols))
         print("Radius guess: ", radius*mybinx)
         # Guess for total flux in binned beam
-        x, y = np.meshgrid(np.arange(w/mybinx), np.arange(h/mybiny), )
+        x, y = np.meshgrid(np.arange(w//mybinx), np.arange(h//mybiny), )
         mask_circle = np.hypot(x-centroid_x,y-centroid_y) < radius
         flux = np.sum(myframe_bin[mask_circle])
         print("Flux guess: ", flux*mybinx*mybiny)
