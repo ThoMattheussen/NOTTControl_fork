@@ -170,12 +170,14 @@ class Utils:
     
     def configure_camera_readout(self,name,**params):
         """Set the readout configuration parameters for camera "name."""
-    
+
         if not isinstance(name,str):
             name = str(name)
-    
         if name not in self.devices.keys():
             raise Exception(f"A camera device with name {name} does not exist.")
+        # Some nodes are locked whilst the camera is streaming. Making the user aware of that with below exception.
+        if self.streaming[name]:
+            raise RuntimeError(f"Camera {name} is streaming. Please stop the stream before reconfiguring the camera configuration.")
             
         device = self.devices[name]
         nodemap = device.nodemap
@@ -197,10 +199,12 @@ class Utils:
         
         if not isinstance(name,str):
             name = str(name)
-        
         if name not in self.devices.keys():
             raise Exception(f"A camera device with name {name} does not exist.")
-            
+        # Some nodes are locked whilst the camera is streaming. Making the user aware of that with below exception.
+        if self.streaming[name]:
+            raise RuntimeError(f"Camera {name} is streaming. Please stop the stream before reconfiguring the stream configuration.")
+   
         device = self.devices[name]
         stream_nodemap = device.tl_stream_nodemap
         
@@ -229,11 +233,14 @@ class Utils:
         stream_nodemap = device.tl_stream_nodemap
         try:
             val = nodemap[param].value
-        except:
-            val = stream_nodemap[param].value
+        except KeyError:
+            try:
+                val = stream_nodemap[param].value
+            except KeyError:
+                raise KeyError(f"Parameter {param} is part of neither the camera, nor the stream nodemap.")
             
         print(f'Camera {name} has parameter {param} set to {val}.')
-        
+        return val
     
     #-----------------------------------------#
     # Streaming control and frame acquisition #
@@ -250,9 +257,8 @@ class Utils:
         else:
             device = self.devices[name]
             device.start_stream()
+            self.streaming[name] = True
             print(f"Camera {name} started streaming.")
-            
-        self.streaming[name] = True
         
     def stop_streaming(self,name):
         """Stop streaming on camera "name"."""
@@ -263,11 +269,10 @@ class Utils:
         if self.streaming[name]:
             device = self.devices[name]
             device.stop_stream()
+            self.streaming[name] = False
             print(f"Camera {name} stopped streaming.")
         else:
             print(f"Camera {name} is not streaming.")
-    
-        self.streaming[name] = False
         
     def get_frame(self,name): 
         """Retrieve a frame (and its width & height) from camera "name". Method assumes camera is streaming prior to call and will not handle closing the stream after call."""
@@ -302,11 +307,24 @@ class Utils:
         
         if name == "im_cam":
             return self.get_fit_im(beam_nr,visual_feedback,**fit_params[name])
-        if name == "pup_cam":
+        elif name == "pup_cam":
             return self.get_fit_pup(beam_nr,visual_feedback,**fit_params[name])
         else:
             raise Exception(f"Camera with name {name} not recognized. Please specify either 'im_cam' or 'pup_cam' as name.")
        
+    # Binning function
+    def _bin_frame(self, data, binning_x, binning_y):
+        h, w = data.shape
+        bins_x = h // binning_x
+        bins_y = w // binning_y
+        resid_x = h % binning_x
+        resid_y = w % binning_y
+        # Cropping data dimensions to be multiples of the binning factor
+        data = data[:h-resid_x,:w-resid_y]
+        # Binning
+        a = data.reshape(bins_x, binning_x, bins_y, binning_y).mean(axis=(1,3))
+        return a
+        
     def get_fit_im(self,beam_nr,visual_feedback,**params):
         """
         Fit for the centroid position and radius of a single beam that is visible on the image camera.
@@ -319,19 +337,12 @@ class Utils:
         beam_name = "beam"+str(beam_nr)
         # Reference state of considered beam
         ref = ref_state["im_cam"][beam_name]
-        # Binning function
-        def bin_frame(data, binning_x, binning_y):
-            h, w = data.shape
-            bins_x = h // binning_x
-            bins_y = w // binning_y
-            a = data.reshape(bins_x, binning_x, bins_y, binning_y).mean(axis=(1,3))
-            return a
     
         #--------------#
         # Taking frame #
         #--------------#
         myframe,w,h = self.get_frame("im_cam")
-        myframe_bin = bin_frame(myframe,mybinx,mybiny)
+        myframe_bin = self._bin_frame(myframe,mybinx,mybiny)
         #------------------------------------------------------------#
         # Detecting the beam edge by gradient and intensity criteria #
         #------------------------------------------------------------#
@@ -465,21 +476,14 @@ class Utils:
         beam_name = "beam"+str(beam_nr)
         # Reference state of considered beam
         ref = ref_state["pup_cam"][beam_name]
-        # Binning function
-        def bin_frame(data, binning_x, binning_y):
-            h, w = data.shape
-            bins_x = h // binning_x
-            bins_y = w // binning_y
-            a = data.reshape(bins_x, binning_x, bins_y, binning_y).mean(axis=(1,3))
-            return a
         
         #---------------------------------------#
         # Taking frame, smoothening and binning #
         #---------------------------------------#
         myframe,w,h = self.get_frame("pup_cam")
         myframe_smooth = gaussian_filter(myframe,sigma)
-        myframe_smooth_bin = bin_frame(myframe_smooth,mybinx,mybiny)
-        myframe_bin = bin_frame(myframe,mybinx,mybiny)
+        myframe_smooth_bin = self._bin_frame(myframe_smooth,mybinx,mybiny)
+        myframe_bin = self._bin_frame(myframe,mybinx,mybiny)
         #------------------------------------------------------------#
         # Detecting the beam edge by gradient and intensity criteria #
         #------------------------------------------------------------#
