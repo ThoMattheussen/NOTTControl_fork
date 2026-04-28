@@ -99,6 +99,8 @@ class Utils:
         self.readout_configured = {"im_cam": False, "pup_cam": False}
         self.stream_configured = {"im_cam": False, "pup_cam": False}
         self.streaming = {"im_cam": False, "pup_cam": False}
+        # Field used for threading a callback function
+        self.streaming_callback = {"im_cam": False, "pup_cam": False}
 
         # Pixel formats are matched to the shmlib numpy data types, despite not all pixel formats being supported by the lucid camera (see arena_api enums).
         #               follow the Pixel Format Naming Convention (pfnc)
@@ -429,9 +431,15 @@ class Utils:
             print(f"Camera {name} returned a snapshot, stream closed.")
         return frame, w, h
 
-    def get_thread(self, name, callback, stop_event):
-        """Stream snapshots of camera {name}'s view in real-time and pass each one to the callback function. A background thread is used for this purpose.
-        To stop the stream, call "stop_event.set() from outside the thread, i.e. in upper-level code."""
+    def start_thread(self, name, callback):
+        """Create and return a thread that fetches snapshots of camera {name} in real-time and passes each one to the callback function.
+        Use stop_streaming_callback to stop the thread from outside.
+        Wait for thread to finish by calling thread.join() before running other code."""
+        
+        # Flag that a callback stream is starting
+        self.start_streaming_callback(name)
+        # Creating a stop event
+        stop_event = threading.Event()
 
         def _loop():
             if not isinstance(name,str):
@@ -442,9 +450,14 @@ class Utils:
             self.start_streaming(name)
             try:
                 while not stop_event.is_set():
-                    frame, w, h = self._get_frame(device,nodemap)
-                    # Pass frame to callback function, returning/doing whatever you wish.
-                    callback(frame, w, h)
+                    if self.streaming_callback[name]:
+                        frame, w, h = self._get_frame(device,nodemap)
+                        # Pass frame to callback function
+                        callback(frame, w, h)
+                    else:
+                        # Break out of thread
+                        stop_event.set()
+                    time.sleep(0.01)
             finally:
                 self.stop_streaming(name)
 
@@ -452,37 +465,12 @@ class Utils:
         thread.start()
         return thread
 
-    def stream_view(self, name):
-        """ Real-time stream of the camera {name}'s view."""
+    def start_streaming_callback(self, name):
+        self.streaming_callback[name] = True
 
-        # Get a single frame to get its dimensions. These cannot change during stream by construction of this code package.
-        frame, w, h = self.snap(name)
-        # Initialize plot
-        fig, ax = plt.subplots()
-        plot = ax.imshow(frame)
-        plt.ion()
-        plt.show()
+    def stop_streaming_callback(self, name):
+        self.streaming_callback[name] = False
 
-        def callback(frame, w, h):
-            plot.set_data(frame)
-            fig.canvas_draw()
-            fig.canvas.flush_events()
-
-        print("Streaming, press CTRL+C to quit.")
-        # Creating event to mark when to stop, as well as the thread itself
-        stop_event = threading.Event()
-        thread = self.get_thread(name, callback, stop_event)
-
-        try:
-            while True:
-                time.sleep(0.01)
-        except KeyboardInterrupt:
-            # Flag stop
-            stop_event.set()
-            # Await thread completion
-            thread.join()
-            print(f"Stopped the stream on camera {name}.")
-    
     def fit(self,name,beam_nr,visual_feedback):
         """Fit for the centroid position and radius of a single beam that is visible on camera "name". This function handles the opening and closing of the stream.
         beam_nr is either 1,2,3 or 4. Beams are numbered counting towards the bench edge; beam 1 is the innermost one, beam 4 the outermost one.
