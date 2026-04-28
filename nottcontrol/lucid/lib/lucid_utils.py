@@ -28,9 +28,9 @@ from astropy.modeling import models, fitting
 #---------------#
 
 # Loading config
-from nottcontrol.lucid import config_lucid
+from nottcontrol import config as nott_config
 # Dictionary for type conversions
-convert_dict = dict(config_lucid['convert_dict'])
+convert_dict = dict(nott_config['convert_dict'])
 
 def convert(dic,conversion_dic):
     """
@@ -52,22 +52,22 @@ def convert(dic,conversion_dic):
     return dic
 
 # Connectivity parameters
-im_ip = str(config_lucid['connection']['im_ip'])
-pup_ip = str(config_lucid['connection']['pup_ip'])
+im_ip = str(nott_config['connection']['im_ip'])
+pup_ip = str(nott_config['connection']['pup_ip'])
 # Camera parameters
-stream_im = convert(dict(config_lucid['stream_im']),convert_dict)
-stream_pup = convert(dict(config_lucid['stream_pup']),convert_dict)
-readout_im = convert(dict(config_lucid['readout_im']),convert_dict)
-readout_pup = convert(dict(config_lucid['readout_pup']),convert_dict)
+stream_im = convert(dict(nott_config['stream_im']),convert_dict)
+stream_pup = convert(dict(nott_config['stream_pup']),convert_dict)
+readout_im = convert(dict(nott_config['readout_im']),convert_dict)
+readout_pup = convert(dict(nott_config['readout_pup']),convert_dict)
 stream_params = {"im_cam":stream_im, "pup_cam":stream_pup}
 readout_params = {"im_cam":readout_im, "pup_cam":readout_pup}
 # Fitting parameters
-fit_im = convert(dict(config_lucid['fit_im']),convert_dict)
-fit_pup = convert(dict(config_lucid['fit_pup']),convert_dict)
+fit_im = convert(dict(nott_config['fit_im']),convert_dict)
+fit_pup = convert(dict(nott_config['fit_pup']),convert_dict)
 fit_params = {"im_cam":fit_im, "pup_cam":fit_pup}
 # Beam centroid positions and radius in reference, injecting state
-ref_im = convert(dict(config_lucid['ref_im']),convert_dict)
-ref_pup = convert(dict(config_lucid['ref_pup']),convert_dict)
+ref_im = convert(dict(nott_config['ref_im']),convert_dict)
+ref_pup = convert(dict(nott_config['ref_pup']),convert_dict)
 ref_state = {"im_cam":ref_im, "pup_cam":ref_pup}
 
 class Utils:
@@ -344,13 +344,15 @@ class Utils:
         print("Streaming, press CTRL+C to quit.")
         # Creating event to mark when to stop, as well as the thread itself
         stop_event = threading.Event()
-        thread = self.stream(name, callback, stop_event)
+        thread = self.get_thread(name, callback, stop_event)
 
         try:
             while True:
                 time.sleep(0.01)
         except KeyboardInterrupt:
+            # Flag stop
             stop_event.set()
+            # Await thread completion
             thread.join()
             print(f"Stopped the stream on camera {name}.")
     
