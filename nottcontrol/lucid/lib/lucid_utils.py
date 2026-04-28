@@ -18,6 +18,10 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 # Imports for visible camera (lucid) interfacing
 from arena_api.system import system
+from arena_api.buffer import BufferFactory
+from arena_api.enums import PixelFormat
+# xaosim-supported datatypes
+from xaosim.shmlib import all_dtypes
 # Imports for centroid fitting
 from scipy.ndimage import gaussian_filter, sobel
 from lmfit import Parameters, minimize
@@ -95,6 +99,12 @@ class Utils:
         self.readout_configured = {"im_cam": False, "pup_cam": False}
         self.stream_configured = {"im_cam": False, "pup_cam": False}
         self.streaming = {"im_cam": False, "pup_cam": False}
+
+        # Pixel formats are matched to the shmlib numpy data types, despite not all pixel formats being supported by the lucid camera (see arena_api enums).
+        self.pxformats = ['Mono8',   'Mono8s',  'Mono16',     'Mono16s',
+                          'Mono32',  'Mono32s', 'Mono64',     'Mono64s',
+                          'Mono32f', 'Mono64f', 'Complex64f', 'Complex128f']
+        self.dtypes = all_dtypes
         
     def __enter__(self):
         """Connect to both cameras and create associated devices for interfacing. Install default streaming configuration parameters."""
@@ -194,7 +204,20 @@ class Utils:
             if not isinstance(param,str):
                 param = str(param)
             try:
+                # a) In the specific case of PixelFormat, check whether the camera supports the input format first.
+                # Based on "Acquisition: Compressed Image Handling" arena api example code
+                if param == 'PixelFormat':
+                    entries = nodemap[param].enumentry_names
+                    found = False
+                    for e in entries:
+                        if (e == value):
+                            found = True
+                            break
+                    if not found:
+                        raise Exception("Input PixelFormat not supported by camera.")
+                # b) In the case of any other param
                 nodemap[param].value = value
+
             except Exception as e:
                 fail = True
                 print(f"Failed to configure readout parameter {param} on camera {name}: {e}")
@@ -292,21 +315,76 @@ class Utils:
         else:
             print(f"Camera {name} is not streaming.")
         
-    def _get_frame(self,device,nodemap): 
-        """Retrieve a frame (and its width & height) from "device" with corresponding readout nodemap "nodemap". Method assumes device is streaming prior to call and will not handle closing the stream after call."""
-        
+    def _get_frame(self,device,nodemap,pxformat=None,dtype=None,verbose=False): 
+        """Retrieve a frame (and its width & height) by retrieving a buffer from "device" with corresponding readout nodemap "nodemap".
+           Method assumes device is streaming prior to call and will not handle closing the stream after call.
+           self.pxformats stores a list of pixel format names, not all of which are supported by the camera.
+           self.dtypes stores a list of corresponding numpy data types
+           If no pixel format (pxformat) is specified, the buffer is copied with its native format.
+           If a pixel format (pxformat) is specified, the buffer is converted to that format.
+           If the used pixel format is not in self.pxformats, the user should specify the corresponding numpy data type via parameter dtype.
+
+           Params:
+            - pxformat: Instance of the ! PixelFormat class (e.g., PixelFormat.BGRa10)
+            - dtype: Instance of the numpy class, numpy datatype
+
+        """
+
+        # Fetching buffer
         buffer = device.get_buffer()
-        frame = np.array(buffer.data, dtype=np.uint8)
-        frame = frame.reshape(buffer.height, buffer.width)
-        # Width and height
-        w = nodemap["Width"].value
-        h = nodemap["Height"].value
-        # Requeue to release buffer memory
+        # Copying buffer
+        if pxformat is None:
+            # Keep native (i.e., set up in camera configuration) pixel format
+            buffer_copy = BufferFactory.copy(buffer)
+        else:
+            # Convert to user-specified format
+            buffer_copy = BufferFactory.convert(buffer, pxformat)
+        # Requeueing the buffer as it is no longer needed
         device.requeue_buffer(buffer)
+
+        # Analysing buffer copy
+        # ---------------------
+        if verbose:
+            print("Buffer id: ", buffer_copy.frame_id)
+            print("Buffer timestamp (ns): ", buffer_copy.timestamp_ns)
+            print("Buffer pixel format: ", buffer_copy.pixel_format.name)
+            print("")
+            print("Buffer payload type: ", buffer_copy.payload_type) # To check whether the buffer holds Chunk data and the w,h retrieval should be adapted to that. To be removed
+            print("Buffer has image data? ", buffer_copy.has_imagedata)
+            print("Buffer has chunk data? ", buffer_copy.has_chunkdata)
+            print("")
+            print("Buffer size: ", buffer_copy.buffer_size)
+            print("Size of filled buffer: ", buffer_copy.size_filled)
+            print("Payload size: ", buffer_copy.payload_size)
+            print("Is buffer incomplete? ", buffer_copy.is_incomplete)
+            print("Is data larger than buffer? ", buffer_copy.is_data_larger_than_buffer)
+            print("")
+            print("Buffer width, height (px): ", buffer_copy.width, buffer_copy.height)
+            print("Buffer x,y offsets (px): ", buffer_copy.offset_x, buffer_copy.offset_y)
+ 
+        # Width and height
+        w = buffer_copy.width
+        h = buffer_copy.height
+        # Pixel format name
+        pxformat_str = nodemap['PixelFormat'].value
+        # Numpy data type
+        if pxformat_str not in self.pxformats:
+            if dtype = None:
+                raise Exception("Pixel format not supported for automatic conversion to numpy data type (see self.pxformats in lucid_utils). Please input a numpy datatype manually via the "dtype" parameter of this method.")
+            else:
+                dtype = dtype
+        else:
+            dtype = self.dtypes[np.argwhere(self.pxformats == pxformat_str)] 
+        # Data
+        frame = np.array(buffer.data, dtype=dtype)
+        frame = frame.reshape(h,w)
+
+        # Destroy the buffer copy
+        BufferFactory.destroy(buffer_copy)
         
         return frame,w,h
 
-    def snap(self, name):
+    def snap(self, name, verbose=False):
         """Take a snapshot of camera {name}'s view, i.e. one single frame of data. This function handles the opening and closing of the stream."""
 
         if not isinstance(name,str):
@@ -316,7 +394,7 @@ class Utils:
         # Open stream
         self.start_streaming(name)
         try:
-            frame, w, h = self._get_frame(device,nodemap)
+            frame, w, h = self._get_frame(device,nodemap,verbose)
         finally:
             self.stop_streaming(name)
             print(f"Camera {name} returned a snapshot, stream closed.")
