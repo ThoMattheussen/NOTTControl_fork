@@ -75,16 +75,16 @@ class Utils:
     Class that bundles functionalities related to the lucid visible cameras installed in the pupil and image plane.
     Functionalities include:
         > Creating and managing camera connections and streams via the lucid-provided "Arena API"
-        > Changing the configuration (frame size, exposure time, ...) of connected cameras
-        > Fetching camera frames by exchange of buffers
+        > Changing the configuration (frame size, exposure time, ...) of connected cameras and their streams
+        > Fetching camera frames by exhange of buffers
         > Fitting camera frames for beam centroid positions
-        > Providing visual feedback
+        > Enabling threading with user-specified callback function
         
     Example use case:
         
     import lucid_utils
     with lucid_utils.Utils() as utils:
-        
+        # Getting a single frame
         frame,width,height = utils.snap("im_cam")
         
     '''
@@ -92,6 +92,8 @@ class Utils:
     def __init__(self):
         
         self.devices = {}
+        self.readout_configured = {"im_cam": False, "pup_cam": False}
+        self.stream_configured = {"im_cam": False, "pup_cam": False}
         self.streaming = {"im_cam": False, "pup_cam": False}
         
     def __enter__(self):
@@ -179,21 +181,27 @@ class Utils:
         # Some nodes are locked whilst the camera is streaming. Making the user aware of that with below exception.
         if self.streaming[name]:
             raise RuntimeError(f"Camera {name} is streaming. Please stop the stream before reconfiguring the camera configuration.")
-            
+
         device = self.devices[name]
         nodemap = device.nodemap
-        
+
+        # Flag that readout is under configuration
+        self.readout_configured[name] = False
+
+        fail = False
         for param, value in params.items():
             
             if not isinstance(param,str):
                 param = str(param)
-            
-            if param in nodemap.feature_names:
+            try:
                 nodemap[param].value = value
-            else:
-                print(f"Parameter {param} not found in the nodemap of camera {name}.")
+            except Exception as e:
+                fail = True
+                print(f"Failed to configure readout parameter {param} on camera {name}: {e}")
                 
-        print(f"Camera {name} readout parameters configured.")
+        if not fail:
+            self.readout_configured[name] = True
+            print(f"Camera {name} readout parameters configured.")
     
     def configure_camera_stream(self,name,**params):
         """Set the streaming configuration parameters for camera "name"."""
@@ -208,18 +216,24 @@ class Utils:
    
         device = self.devices[name]
         stream_nodemap = device.tl_stream_nodemap
-        
+
+        # Flag that stream is under configuration
+        self.stream_configured[name] = False
+
+        fail = False
         for param, value in params.items():
             
             if not isinstance(param,str):
                 param = str(param)
-            
-            if param in stream_nodemap.feature_names:
+            try:
                 stream_nodemap[param].value = value
-            else:
-                print(f"Parameter {param} not found in the stream nodemap of camera {name}.")
-                
-        print(f"Camera {name} streaming parameters configured.")
+            except Exception as e:
+                fail = True
+                print(f"Failed to configure stream parameter {param} on camera {name}: {e}")
+
+        if not fail:
+            self.stream_configured[name] = True
+            print(f"Camera {name} streaming parameters configured.")
         
     def get_camera_info(self,name,param):
         """Return the value corresponding to the given "param" for camera "name", in either stream or readout nodemaps."""
@@ -252,6 +266,9 @@ class Utils:
         
         if not isinstance(name,str):
             name = str(name)
+        # Never start streaming on an unconfigured or unsuccessfully re-configured camera
+        if not self.readout_configured[name] or not self.stream_configured[name]:
+            raise Exception(f"Please guarantee that camera {name} is correctly configured before streaming. Refer to .configure_camera_readout and .configure_camera_stream.")
         
         if self.streaming[name]:
             print(f"Camera {name} is already streaming.")
