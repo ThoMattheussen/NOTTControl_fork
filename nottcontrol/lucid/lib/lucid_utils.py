@@ -101,6 +101,7 @@ class Utils:
         self.streaming = {"im_cam": False, "pup_cam": False}
 
         # Pixel formats are matched to the shmlib numpy data types, despite not all pixel formats being supported by the lucid camera (see arena_api enums).
+        #               follow the Pixel Format Naming Convention (pfnc)
         self.pxformats = ['Mono8',   'Mono8s',  'Mono16',     'Mono16s',
                           'Mono32',  'Mono32s', 'Mono64',     'Mono64s',
                           'Mono32f', 'Mono64f', 'Complex64f', 'Complex128f']
@@ -188,10 +189,9 @@ class Utils:
             name = str(name)
         if name not in self.devices.keys():
             raise Exception(f"A camera device with name {name} does not exist.")
-        # Some nodes are locked whilst the camera is streaming. Making the user aware of that with below exception.
-        if self.streaming[name]:
-            raise RuntimeError(f"Camera {name} is streaming. Please stop the stream before reconfiguring the camera configuration.")
-
+        if not self.devices[name].is_connected():
+            raise Exception(f"Camera device with name {name} is not connected.")
+        
         device = self.devices[name]
         nodemap = device.nodemap
 
@@ -203,8 +203,12 @@ class Utils:
             
             if not isinstance(param,str):
                 param = str(param)
+                
             try:
-                # a) In the specific case of PixelFormat, check whether the camera supports the input format first.
+                # a) Verify the node is writable
+                if not nodemap[param].is_writable:
+                    raise RuntimeError(f"Parameter {param} is not writable at the moment. Often nodes are locked whilst streaming.")
+                # b) In the specific case of PixelFormat, check whether the camera supports the input format first.
                 # Based on "Acquisition: Compressed Image Handling" arena api example code
                 if param == 'PixelFormat':
                     entries = nodemap[param].enumentry_names
@@ -215,7 +219,7 @@ class Utils:
                             break
                     if not found:
                         raise Exception("Input PixelFormat not supported by camera.")
-                # b) In the case of any other param
+                # c) In the case of any other param
                 nodemap[param].value = value
 
             except Exception as e:
@@ -233,10 +237,9 @@ class Utils:
             name = str(name)
         if name not in self.devices.keys():
             raise Exception(f"A camera device with name {name} does not exist.")
-        # Some nodes are locked whilst the camera is streaming. Making the user aware of that with below exception.
-        if self.streaming[name]:
-            raise RuntimeError(f"Camera {name} is streaming. Please stop the stream before reconfiguring the stream configuration.")
-   
+        if not self.devices[name].is_connected():
+            raise Exception(f"Camera device with name {name} is not connected.")
+       
         device = self.devices[name]
         stream_nodemap = device.tl_stream_nodemap
 
@@ -248,8 +251,25 @@ class Utils:
             
             if not isinstance(param,str):
                 param = str(param)
+
             try:
-                stream_nodemap[param].value = value
+                # a) Verify the node is writable
+                if not nodemap[param].is_writable:
+                    raise RuntimeError(f"Parameter {param} is not writable at the moment. Often nodes are locked whilst streaming.")
+                # b) In the specific case of PixelFormat, check whether the camera supports the input format first.
+                # Based on "Acquisition: Compressed Image Handling" arena api example code
+                if param == 'PixelFormat':
+                    entries = nodemap[param].enumentry_names
+                    found = False
+                    for e in entries:
+                        if (e == value):
+                            found = True
+                            break
+                    if not found:
+                        raise Exception("Input PixelFormat not supported by camera.")
+                # c) In the case of any other param
+                nodemap[param].value = value
+                
             except Exception as e:
                 fail = True
                 print(f"Failed to configure stream parameter {param} on camera {name}: {e}")
@@ -264,8 +284,10 @@ class Utils:
         if not isinstance(name,str):
             name = str(name)
         if not isinstance(param,str):
-            param = str(param)
-        
+            param = str(param)        
+        if not self.devices[name].is_connected():
+            raise Exception(f"Camera device with name {name} is not connected.")
+
         device = self.devices[name]
         nodemap = device.nodemap
         stream_nodemap = device.tl_stream_nodemap
@@ -289,6 +311,8 @@ class Utils:
         
         if not isinstance(name,str):
             name = str(name)
+        if not self.devices[name].is_connected():
+            raise Exception(f"Camera device with name {name} is not connected.")
         # Never start streaming on an unconfigured or unsuccessfully re-configured camera
         if not self.readout_configured[name] or not self.stream_configured[name]:
             raise Exception(f"Please guarantee that camera {name} is correctly configured before streaming. Refer to .configure_camera_readout and .configure_camera_stream.")
@@ -305,8 +329,9 @@ class Utils:
         """Stop streaming on camera "name"."""
         
         if not isinstance(name,str):
-            name = str(name)
-        
+            name = str(name)        
+        if not self.devices[name].is_connected():
+            raise Exception(f"Camera device with name {name} is not connected.")
         if self.streaming[name]:
             device = self.devices[name]
             device.stop_stream()
@@ -329,6 +354,10 @@ class Utils:
             - dtype: Instance of the numpy class, numpy datatype
 
         """
+
+        # Verifying device connection
+        if not device.is_connected():
+            raise Exception(f"Camera device is not connected.")
 
         # Fetching buffer
         buffer = device.get_buffer()
