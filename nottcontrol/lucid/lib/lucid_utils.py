@@ -76,7 +76,7 @@ class Utils:
     Functionalities include:
         > Creating and managing camera connections and streams via the lucid-provided "Arena API"
         > Changing the configuration (frame size, exposure time, ...) of connected cameras and their streams
-        > Fetching camera frames by exhange of buffers
+        > Fetching camera frames by exchange of buffers
         > Fitting camera frames for beam centroid positions
         > Enabling threading with user-specified callback function
         
@@ -292,16 +292,8 @@ class Utils:
         else:
             print(f"Camera {name} is not streaming.")
         
-    def get_frame(self,name): 
-        """Retrieve a frame (and its width & height) from camera "name". Method assumes camera is streaming prior to call and will not handle closing the stream after call."""
-        
-        if not isinstance(name,str):
-            name = str(name)
-        if not self.streaming[name]:
-            raise RuntimeError(f"Camera {name} is not streaming. Please start the camera stream before requesting to fetch frames.")
-        
-        device = self.devices[name]
-        nodemap = device.nodemap
+    def _get_frame(self,device,nodemap): 
+        """Retrieve a frame (and its width & height) from "device" with corresponding readout nodemap "nodemap". Method assumes device is streaming prior to call and will not handle closing the stream after call."""
         
         buffer = device.get_buffer()
         frame = np.array(buffer.data, dtype=np.uint8)
@@ -316,9 +308,15 @@ class Utils:
 
     def snap(self, name):
         """Take a snapshot of camera {name}'s view, i.e. one single frame of data. This function handles the opening and closing of the stream."""
+
+        if not isinstance(name,str):
+            name = str(name)
+        device = self.devices[name]
+        nodemap = device.nodemap
+        # Open stream
         self.start_streaming(name)
         try:
-            frame, w, h = self.get_frame(name)
+            frame, w, h = self._get_frame(device,nodemap)
         finally:
             self.stop_streaming(name)
             print(f"Camera {name} returned a snapshot, stream closed.")
@@ -329,10 +327,15 @@ class Utils:
         To stop the stream, call "stop_event.set() from outside the thread, i.e. in upper-level code."""
 
         def _loop():
+            if not isinstance(name,str):
+                name = str(name)
+            device = self.devices[name]
+            nodemap = device.nodemap
+            # Open stream
             self.start_streaming(name)
             try:
                 while not stop_event.is_set():
-                    frame, w, h = self.get_frame(name)
+                    frame, w, h = self._get_frame(device,nodemap)
                     # Pass frame to callback function, returning/doing whatever you wish.
                     callback(frame, w, h)
             finally:
